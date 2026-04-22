@@ -35,6 +35,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'requirements.txt'
 
       - name: Instalar Google Chrome
         uses: browser-actions/setup-chrome@v1
@@ -44,7 +46,7 @@ jobs:
       - name: Instalar dependências
         run: |
           pip install --upgrade pip
-          pip install nodriver openpyxl
+          pip install -r requirements.txt
 
       - name: Verificar arquivos necessários
         run: |
