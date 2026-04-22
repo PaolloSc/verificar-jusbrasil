@@ -631,12 +631,26 @@ async def _run(args):
             "--window-size=1920,1080",
         ]
 
-    browser = await uc.start(
-        headless=is_ci,
-        sandbox=False,
-        user_data_dir=PERFIL_CHROME,
-        browser_args=browser_args,
-    )
+    async def _start_browser():
+        """Start browser with retries (CI containers can be slow)."""
+        kw = dict(
+            headless=is_ci,
+            sandbox=False,
+            browser_args=browser_args,
+        )
+        if not is_ci:
+            kw["user_data_dir"] = PERFIL_CHROME
+        last_err = None
+        for attempt in range(3):
+            try:
+                return await uc.start(**kw)
+            except Exception as e:
+                last_err = e
+                log.warning(f"  Browser start attempt {attempt+1} failed: {e}")
+                await asyncio.sleep(2 * (attempt + 1))
+        raise last_err
+
+    browser = await _start_browser()
 
     log.info("Chrome iniciado.")
     log.info("NOTA: Se você não estiver vendo a aba do Jusbrasil, ela pode ter aberto em uma janela diferente ou em segundo plano.")
@@ -664,12 +678,7 @@ async def _run(args):
                 except Exception:
                     pass
                 log.info("  Recriando browser...")
-                browser = await uc.start(
-                    headless=is_ci,
-                    sandbox=False,
-                    user_data_dir=PERFIL_CHROME,
-                    browser_args=browser_args,
-                )
+                browser = await _start_browser()
                 try:
                     tab = await browser.get("https://www.jusbrasil.com.br/consulta-processual/", new_tab=True)
                     await tab.bring_to_front()
