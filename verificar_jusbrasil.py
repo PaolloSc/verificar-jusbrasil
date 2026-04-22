@@ -656,12 +656,13 @@ async def _run(args):
         except Exception:
             pass
 
-    browser_args = ["--disable-session-crashed-bubble"]
+    browser_args = []
+    if not is_ci:
+        browser_args.append("--disable-session-crashed-bubble")
     if is_ci:
+        # Minimal flags — extras make Chrome look automated to Cloudflare.
+        # nodriver already adds --disable-dev-shm-usage, --disable-breakpad, etc.
         browser_args += [
-            "--disable-gpu",
-            "--disable-dev-shm-usage",
-            "--disable-extensions",
             "--disable-setuid-sandbox",
             "--window-size=1920,1080",
         ]
@@ -688,8 +689,23 @@ async def _run(args):
     browser = await _start_browser()
 
     log.info("Chrome iniciado.")
-    log.info("NOTA: Se você não estiver vendo a aba do Jusbrasil, ela pode ter aberto em uma janela diferente ou em segundo plano.")
-    log.info("Verifique outras janelas do Chrome abertas.")
+    if not is_ci:
+        log.info("NOTA: Se você não estiver vendo a aba do Jusbrasil, ela pode ter aberto em uma janela diferente ou em segundo plano.")
+        log.info("Verifique outras janelas do Chrome abertas.")
+
+    # Stealth: patch detection vectors before first navigation
+    try:
+        main_tab = browser.main_tab
+        await main_tab.send(uc.cdp.page.add_script_to_evaluate_on_new_document(
+            source="""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'languages', {get: () => ['pt-BR', 'pt', 'en-US', 'en']});
+                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}};
+            """
+        ))
+    except Exception:
+        pass
 
     sim = nao = pub = nao_enc = erros = 0
 
