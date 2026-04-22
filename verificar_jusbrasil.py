@@ -197,7 +197,8 @@ async def _tem_cloudflare(tab) -> bool:
 async def _resolver_cloudflare(tab) -> bool:
     """
     Detecta Cloudflare Turnstile e tenta resolver.
-    - Tenta automático por 8s (o Turnstile às vezes passa sozinho com zendriver)
+    - Tenta automático (nodriver é undetected — Turnstile frequentemente passa)
+    - Em CI aguarda mais tempo (containers são lentos)
     - Se não resolver, pausa e pede resolução manual no browser
     """
     if not await _tem_cloudflare(tab):
@@ -205,16 +206,42 @@ async def _resolver_cloudflare(tab) -> bool:
 
     log.info("  Cloudflare detectado — tentando resolver automaticamente...")
 
-    # Aguarda até 8s para o zendriver passar sozinho (funciona às vezes)
-    for _ in range(8):
+    is_ci = bool(os.environ.get("CI"))
+    max_wait = 25 if is_ci else 8
+
+    # Tenta clicar no checkbox do Turnstile (dentro do iframe)
+    try:
+        await tab.evaluate("""
+            (() => {
+                const frames = document.querySelectorAll('iframe[src*="challenges.cloudflare.com"]');
+                for (const f of frames) {
+                    f.click();
+                }
+            })()
+        """)
+    except Exception:
+        pass
+
+    for i in range(max_wait):
         await asyncio.sleep(1)
         if not await _tem_cloudflare(tab):
             log.info("  Cloudflare resolvido automaticamente.")
             return True
+        # Re-click every 5s
+        if i % 5 == 4:
+            try:
+                await tab.evaluate("""
+                    (() => {
+                        const frames = document.querySelectorAll('iframe[src*="challenges.cloudflare.com"]');
+                        for (const f of frames) { f.click(); }
+                    })()
+                """)
+            except Exception:
+                pass
 
     # Fallback: resolução manual (se não estiver no GitHub Actions)
-    if os.environ.get("CI"):
-        log.warning("  [CI] Ambiente automatizado detectado. Pulando resolução manual do Cloudflare.")
+    if is_ci:
+        log.warning("  [CI] Cloudflare não resolvido após %ds.", max_wait)
         return False
         
     log.info("")
@@ -261,63 +288,71 @@ async def _pesquisar(browser, tab, cnj: str) -> str:
         except Exception:
             pass
         await asyncio.sleep(2)
-        
-        await _resolver_cloudflare(tab)
+
+        cf_ok = await _resolver_cloudflare(tab)
 
         # 2. Digita o CNJ no campo de busca e pressiona Enter
-        try:
-            # Usa uma injeção JS robusta para preencher o campo React e clicar no botão
-            sucesso_js = await tab.evaluate(f"""
-                (() => {{
-                    const cnj = "{cnj}";
-                    const inputs = document.querySelectorAll('input[type="search"], input[name="q"]');
-                    
-                    for (const input of inputs) {{
-                        // Verifica se o input está visível
-                        if (input.offsetParent !== null) {{
-                            input.focus();
-                            
-                            // Hack necessário para o React reconhecer a mudança de valor
-                            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-                            nativeInputValueSetter.call(input, cnj);
-                            
-                            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                            input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                            
-                            // Procura o formulário e o botão de submit
-                            const form = input.closest('form');
-                            if (form) {{
-                                const btn = form.querySelector('button[type="submit"], button[aria-label="pesquisar"]');
-                                if (btn) {{
-                                    btn.click();
+        sucesso_js = False
+        if cf_ok:
+            try:
+                # Usa uma injeção JS robusta para preencher o campo React e clicar no botão
+                sucesso_js = await tab.evaluate(f"""
+                    (() => {{
+                        const cnj = "{cnj}";
+                        const inputs = document.querySelectorAll('input[type="search"], input[name="q"]');
+
+                        for (const input of inputs) {{
+                            // Verifica se o input está visível
+                            if (input.offsetParent !== null) {{
+                                input.focus();
+
+                                // Hack necessário para o React reconhecer a mudança de valor
+                                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+                                nativeInputValueSetter.call(input, cnj);
+
+                                input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+
+                                // Procura o formulário e o botão de submit
+                                const form = input.closest('form');
+                                if (form) {{
+                                    const btn = form.querySelector('button[type="submit"], button[aria-label="pesquisar"]');
+                                    if (btn) {{
+                                        btn.click();
+                                        return true;
+                                    }}
+                                    form.submit();
                                     return true;
                                 }}
-                                form.submit();
-                                return true;
-                            }}
-                            
-                            // Se não tiver form, tenta achar um botão próximo
-                            const container = input.closest('div');
-                            if (container) {{
-                                const btn = container.querySelector('button');
-                                if (btn) {{
-                                    btn.click();
-                                    return true;
+
+                                // Se não tiver form, tenta achar um botão próximo
+                                const container = input.closest('div');
+                                if (container) {{
+                                    const btn = container.querySelector('button');
+                                    if (btn) {{
+                                        btn.click();
+                                        return true;
+                                    }}
                                 }}
                             }}
                         }}
-                    }}
-                    return false;
-                }})()
-            """)
-            
-            if not sucesso_js:
-                log.warning(f"  Não foi possível encontrar o campo de busca visível para o CNJ {cnj}")
+                        return false;
+                    }})()
+                """)
+            except Exception as e:
+                log.warning(f"  Erro ao tentar buscar via form: {e}")
+
+        # Fallback: navega direto para URL de busca (bypassa Cloudflare no form)
+        if not sucesso_js:
+            log.info(f"  Tentando busca via URL direta...")
+            try:
+                url_busca = f"https://www.jusbrasil.com.br/consulta-processual/busca?q={quote_plus(cnj)}"
+                await asyncio.wait_for(tab.get(url_busca), timeout=30)
+                await asyncio.sleep(2)
+                await _resolver_cloudflare(tab)
+            except Exception as e:
+                log.warning(f"  Erro na busca via URL: {e}")
                 return "Erro"
-                
-        except Exception as e:
-            log.warning(f"  Erro ao tentar buscar: {e}")
-            return "Erro"
 
         # Aguarda a URL mudar (sinal de que a busca começou)
         for _ in range(15):
