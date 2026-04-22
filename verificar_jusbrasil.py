@@ -627,12 +627,13 @@ async def _run(args):
             "--disable-gpu",
             "--disable-dev-shm-usage",
             "--disable-extensions",
+            "--disable-setuid-sandbox",
             "--window-size=1920,1080",
         ]
 
     browser = await uc.start(
         headless=is_ci,
-        no_sandbox=True,
+        sandbox=False,
         user_data_dir=PERFIL_CHROME,
         browser_args=browser_args,
     )
@@ -665,7 +666,7 @@ async def _run(args):
                 log.info("  Recriando browser...")
                 browser = await uc.start(
                     headless=is_ci,
-                    no_sandbox=True,
+                    sandbox=False,
                     user_data_dir=PERFIL_CHROME,
                     browser_args=browser_args,
                 )
