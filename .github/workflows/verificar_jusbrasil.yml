@@ -1,0 +1,93 @@
+name: Verificar Jusbrasil
+
+on:
+  # Execução manual com upload de planilha
+  workflow_dispatch:
+    inputs:
+      planilha:
+        description: 'Nome do arquivo .xlsx (deve estar no repo ou ser enviado como artifact)'
+        required: false
+        default: 'processos.xlsx'
+      inicio:
+        description: 'Número do processo para iniciar (default: 1)'
+        required: false
+        default: '1'
+      debug:
+        description: 'Ativar modo debug'
+        required: false
+        type: boolean
+        default: false
+
+  # Agendamento automático (todo dia às 03:00 UTC = 00:00 BRT)
+  schedule:
+    - cron: '0 3 * * *'
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6h max para processar planilhas grandes
+
+    steps:
+      - name: Checkout repositório
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar Google Chrome
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: 'stable'
+
+      - name: Instalar dependências
+        run: |
+          pip install --upgrade pip
+          pip install nodriver openpyxl
+
+      - name: Verificar arquivos necessários
+        run: |
+          PLANILHA="${{ github.event.inputs.planilha || 'processos.xlsx' }}"
+          echo "Planilha: $PLANILHA"
+          if [ ! -f "$PLANILHA" ]; then
+            echo "::error::Arquivo $PLANILHA não encontrado no repositório!"
+            echo "Coloque o arquivo .xlsx na raiz do repo e faça push."
+            ls -la *.xlsx 2>/dev/null || echo "Nenhum .xlsx encontrado."
+            exit 1
+          fi
+          echo "PLANILHA=$PLANILHA" >> $GITHUB_ENV
+
+      - name: Executar verificação
+        env:
+          CI: true
+        run: |
+          ARGS="--arquivo ${{ env.PLANILHA }}"
+          if [ "${{ github.event.inputs.inicio }}" != "" ] && [ "${{ github.event.inputs.inicio }}" != "1" ]; then
+            ARGS="$ARGS --inicio ${{ github.event.inputs.inicio }}"
+          fi
+          if [ "${{ github.event.inputs.debug }}" == "true" ]; then
+            ARGS="$ARGS --debug"
+          fi
+          echo "Executando: python verificar_jusbrasil.py $ARGS"
+          python verificar_jusbrasil.py $ARGS
+
+      - name: Upload resultado (planilha verificada)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resultado-verificacao-${{ github.run_number }}
+          path: |
+            *_verificado.xlsx
+            verificar_jusbrasil.log
+          retention-days: 30
+
+      - name: Upload planilha de backup
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-planilha-${{ github.run_number }}
+          path: '*_prev.xlsx'
+          retention-days: 7
+          if-no-files-found: ignore
